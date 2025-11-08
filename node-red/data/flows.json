@@ -1,0 +1,247 @@
+[
+    {
+        "id": "flowShellyCO2",
+        "type": "tab",
+        "label": "Shelly → CO2 → DPP",
+        "disabled": false,
+        "info": ""
+    },
+    {
+        "id": "035596ea8bb72a2d",
+        "type": "tls-config",
+        "name": "",
+        "cert": "",
+        "key": "",
+        "ca": "",
+        "certname": "",
+        "keyname": "",
+        "caname": "",
+        "servername": "",
+        "verifyservercert": true,
+        "alpnprotocol": ""
+    },
+    {
+        "id": "mqtt_broker_cloudamqp",
+        "type": "mqtt-broker",
+        "name": "CloudAMQP",
+        "broker": "seal.lmq.cloudamqp.com",
+        "port": "8883",
+        "clientid": "",
+        "usetls": true,
+        "protocolVersion": "4",
+        "keepalive": "60",
+        "cleansession": true
+    },
+    {
+        "id": "9781b07ca1901f6f",
+        "type": "mqtt-broker",
+        "name": "sortingmachine",
+        "broker": "seal.lmq.cloudamqp.com",
+        "port": "8883",
+        "tls": "035596ea8bb72a2d",
+        "clientid": "",
+        "autoConnect": true,
+        "usetls": true,
+        "protocolVersion": 4,
+        "keepalive": 60,
+        "cleansession": true,
+        "autoUnsubscribe": true,
+        "birthTopic": "",
+        "birthQos": "0",
+        "birthRetain": "false",
+        "birthPayload": "",
+        "birthMsg": {},
+        "closeTopic": "",
+        "closeQos": "0",
+        "closeRetain": "false",
+        "closePayload": "",
+        "closeMsg": {},
+        "willTopic": "",
+        "willQos": "0",
+        "willRetain": "false",
+        "willPayload": "",
+        "willMsg": {},
+        "userProps": "",
+        "sessionExpiry": ""
+    },
+    {
+        "id": "mqtt_in_shelly",
+        "type": "mqtt in",
+        "z": "flowShellyCO2",
+        "name": "Shelly Energy (Wh)",
+        "topic": "shellyplugsg3-8cbfeaa0c43/status/switch:0",
+        "qos": "1",
+        "datatype": "json",
+        "broker": "9781b07ca1901f6f",
+        "nl": false,
+        "rap": false,
+        "inputs": 0,
+        "x": 230,
+        "y": 180,
+        "wires": [
+            [
+                "toCO2"
+            ]
+        ]
+    },
+    {
+        "id": "toCO2",
+        "type": "function",
+        "z": "flowShellyCO2",
+        "name": "toCO2",
+        "func": "// ---------------- Konstanten ----------------\nconst FACTOR_LOCATION = 0.093;   // kg CO₂e / kWh\nconst FACTOR_MARKET   = 0.000;   // anpassen\n\n// ---------------- Payload in Objekt wandeln -\nlet data = msg.payload;\nif (typeof data === 'string') {\n    try { data = JSON.parse(data); }\n    catch (e) {\n        node.error(\"JSON-Parsing fehlgeschlagen\", msg);\n        return null;\n    }\n}\n\n// ---------------- Wh auslesen ---------------\nlet wh = null;\n\n// Shelly Plus / G3\nif (data?.aenergy?.total !== undefined) {\n    wh = Number(data.aenergy.total);\n}\n// (optional) Classic-Shelly\nelse if (data?.energy !== undefined) {\n    wh = Number(data.energy);\n}\n// weitere verschachtelte Formate durchsuchen\nelse {\n    node.error(\"Keine Wh-Zahl gefunden\", msg);\n    return null;\n}\n\n// ---------------- Berechnung ---------------\nconst kWh     = +(wh / 1000).toFixed(3);\nconst co2_loc = +(kWh * FACTOR_LOCATION).toFixed(3);\nconst co2_mkt = +(kWh * FACTOR_MARKET ).toFixed(3);\n\n// ---------------- Ergebnis in msg ----------\nmsg.energy = { kWh };\nmsg.co2e   = {\n    location_kg     : co2_loc,\n    market_kg       : co2_mkt,\n    factor_location : FACTOR_LOCATION,\n    factor_market   : FACTOR_MARKET\n};\nmsg.timestamp = new Date().toISOString();\nreturn msg;",
+        "outputs": 1,
+        "timeout": "",
+        "noerr": 0,
+        "initialize": "",
+        "finalize": "",
+        "libs": [],
+        "x": 330,
+        "y": 260,
+        "wires": [
+            [
+                "parseDPP"
+            ]
+        ]
+    },
+    {
+        "id": "parseDPP",
+        "type": "json",
+        "z": "flowShellyCO2",
+        "name": "JSON → Objekt",
+        "property": "payload",
+        "action": "obj",
+        "pretty": false,
+        "x": 460,
+        "y": 200,
+        "wires": [
+            [
+                "mergeDPP"
+            ]
+        ]
+    },
+    {
+        "id": "mergeDPP",
+        "type": "function",
+        "z": "flowShellyCO2",
+        "name": "merge",
+        "func": "// ------------- Dateiinhalt einlesen ---------------------\nlet data = msg.payload;\nif (!Array.isArray(data)) data = [];\n\n// ------------- Nur speichern, wenn kWh vorhanden --------\nif (!msg.energy || typeof msg.energy.kWh !== 'number') {\n    return null;           // nix zu tun\n}\n\n// ------------- Alte ts-only Einträge entfernen ----------\ndata = data.filter(e => typeof e.kWh === 'number');\n\n// ------------- Zeitstempel vorbereiten ------------------\nconst nowDate        = new Date();\nconst ts_iso_utc     = nowDate.toISOString();\nconst ts_iso_local   = new Date(nowDate.getTime() - nowDate.getTimezoneOffset()*60000)\n                         .toISOString()\n                         .slice(0, -1)                  // \"Z\" abschneiden\n                            .replace('T', ' ');         // \"T\" → Leerzeichen;\n\n// ------------- Neuen Datensatz zusammenbauen ------------\nconst entry = {\n    ts_ms        : nowDate.getTime(),   // Unix-Millis\n    ts_iso_utc   : ts_iso_utc,\n    ts_iso_local : ts_iso_local,\n\n    /* alles Weitere einfach übernehmen */\n    ...msg.energy,\n    ...msg.co2e\n};\n\n// ------------- Anhängen & optional begrenzen -----------\ndata.push(entry);\nif (data.length > 10000) data.shift();   // nur die letzten 10 000 Einträge\n\n// ------------- Zurück an File-out -----------------------\nmsg.payload = JSON.stringify(data, null, 2);\nreturn msg;",
+        "outputs": 1,
+        "timeout": "",
+        "noerr": 0,
+        "initialize": "",
+        "finalize": "",
+        "libs": [],
+        "x": 550,
+        "y": 260,
+        "wires": [
+            [
+                "writeDPP",
+                "855b29e927308184"
+            ]
+        ]
+    },
+    {
+        "id": "writeDPP",
+        "type": "file",
+        "z": "flowShellyCO2",
+        "name": "write co2emissions.json",
+        "filename": ".node-red\\co2emissions.json",
+        "filenameType": "str",
+        "appendNewline": false,
+        "createDir": false,
+        "overwriteFile": "true",
+        "encoding": "utf8",
+        "x": 730,
+        "y": 340,
+        "wires": [
+            [
+                "05c097f6d3cfa092"
+            ]
+        ]
+    },
+    {
+        "id": "05c097f6d3cfa092",
+        "type": "debug",
+        "z": "flowShellyCO2",
+        "name": "debug 2",
+        "active": true,
+        "tosidebar": true,
+        "console": false,
+        "tostatus": false,
+        "complete": "true",
+        "targetType": "full",
+        "statusVal": "",
+        "statusType": "auto",
+        "x": 840,
+        "y": 280,
+        "wires": []
+    },
+    {
+        "id": "12758a0c9627835e",
+        "type": "http request",
+        "z": "flowShellyCO2",
+        "name": "",
+        "method": "POST",
+        "ret": "txt",
+        "paytoqs": "ignore",
+        "url": "",
+        "tls": "",
+        "persist": false,
+        "proxy": "",
+        "insecureHTTPParser": false,
+        "authType": "",
+        "senderr": false,
+        "headers": [],
+        "x": 970,
+        "y": 140,
+        "wires": [
+            []
+        ]
+    },
+    {
+        "id": "9c0b408b16df9d85",
+        "type": "function",
+        "z": "flowShellyCO2",
+        "name": "build-supabase-request",
+        "func": "/*  Erwartet:\n      msg.energy.kwh          -> kWh-Messwert\n      msg.co2.location_kg     -> CO₂-Äquivalent\n      (optional) msg.ts_iso_utc (falls schon vorhanden)\n*/\n\nconst SUPABASE_URL   = 'https://ywheivlrppourvacbxkz.supabase.co';\nconst TABLE          = 'usage_phase';   // <- exakt dein Tabellenname\nconst ANON_KEY       = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Inl3aGVpdmxycHBvdXJ2YWNieGt6Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NTI0OTc5NzUsImV4cCI6MjA2ODA3Mzk3NX0.mVn0mE2DVnBc5wAdAPivi6CzL4YalS2FUtk2R7h_L8A';\nconst SERVICE_KEY    = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Inl3aGVpdmxycHBvdXJ2YWNieGt6Iiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc1MjQ5Nzk3NSwiZXhwIjoyMDY4MDczOTc1fQ.kgXZggcz892j6sS-HWCuOctrX2ev_WEmOAgihMOIWks';  // für Inserts mit RLS > off\n\n\n/* ------------------ 1) Zeitstempel bestimmen --------------------- */\nconst tsUtc = msg.timestamp || new Date().toISOString();\n\n/* ------------------ 2) Werte aus dem msg holen ------------------- */\nconst kwh             = Number(msg.energy?.kWh)            || 0;       // <-- hier anpassen, falls Feld ändert\nconst co2_location_kg = Number(msg.co2e?.location_kg)      || 0;       // <-- dito\n\n/* ------------------ 3) JSON-Body (ARRAY) aufbauen --------------- */\nmsg.payload = [{\n  ts_utc          : tsUtc,\n  kwh             : kwh,\n  co2_location_kg : co2_location_kg\n}];\n\n/* ------------------ 4) Header setzen ----------------------------- */\nmsg.headers = {\n  apikey        : ANON_KEY,\n  Authorization : `Bearer ${SERVICE_KEY}`,\n  'Content-Type': 'application/json',\n  Prefer        : 'return=minimal'   // oder 'return=representation'\n};\n\n/* ------------------ 5) Ziel-URL übergeben ------------------------ */\nmsg.url = `${SUPABASE_URL}/rest/v1/${TABLE}`;\n\n/* ------------------ 6) Ausgeben ---------------------------------- */\nreturn msg;",
+        "outputs": 1,
+        "timeout": 0,
+        "noerr": 0,
+        "initialize": "",
+        "finalize": "",
+        "libs": [],
+        "x": 810,
+        "y": 220,
+        "wires": [
+            [
+                "12758a0c9627835e"
+            ]
+        ]
+    },
+    {
+        "id": "855b29e927308184",
+        "type": "delay",
+        "z": "flowShellyCO2",
+        "name": "",
+        "pauseType": "rate",
+        "timeout": "30",
+        "timeoutUnits": "minutes",
+        "rate": "1",
+        "nbRateUnits": "30",
+        "rateUnits": "minute",
+        "randomFirst": "1",
+        "randomLast": "5",
+        "randomUnits": "seconds",
+        "drop": true,
+        "allowrate": false,
+        "outputs": 1,
+        "x": 710,
+        "y": 160,
+        "wires": [
+            [
+                "9c0b408b16df9d85"
+            ]
+        ]
+    }
+]

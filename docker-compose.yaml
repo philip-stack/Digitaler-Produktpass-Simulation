@@ -1,0 +1,69 @@
+services:
+  # PostgreSQL (lokale Datenbank)
+  db:
+    image: postgres:15
+    container_name: postgres_sim
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: postgres
+    ports:
+      - "5432:5432"
+    volumes:
+      - db_data:/var/lib/postgresql/data
+    networks:
+      - appnet
+
+  # Backend (FastAPI)
+  backend:
+    build: ./backend
+    container_name: backend_sim
+    restart: unless-stopped
+    depends_on:
+      - db
+    environment:
+      DB_HOST: db
+      DB_PORT: 5432
+      DB_NAME: postgres
+      DB_USER: postgres
+      DB_PASSWORD: postgres
+      MQTT_PORT: 1883
+    ports:
+      - "8000:8000"
+    networks:
+      - appnet
+    command: uvicorn main:app --host 0.0.0.0 --port 8000
+
+  # Frontend (React + NGINX)
+  frontend:
+    build: ./frontend
+    container_name: frontend_sim
+    restart: unless-stopped
+    depends_on:
+      - backend
+    ports:
+      - "3000:80"
+    networks:
+      - appnet
+
+  # Node-RED
+  node-red:
+    image: nodered/node-red:latest
+    container_name: node-red_sim
+    restart: always
+    volumes:
+      - ./node-red:/data
+    ports:
+      - "1880:1880"
+    depends_on:
+      - backend
+    networks:
+      - appnet
+
+networks:
+  appnet:
+
+# Persistentes Volume PostgreSQL-Daten
+volumes:
+  db_data:
